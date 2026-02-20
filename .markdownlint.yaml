@@ -1,0 +1,31 @@
+# Markdown Lint Configuration
+# https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+
+# Disable line length limit for tables and code blocks
+MD013:
+  line_length: 80
+  heading_line_length: 80
+  code_block_line_length: 120
+  table_line_length: 200
+  code_blocks: true
+  tables: false
+  headings: true
+  headers: true
+  strict: false
+  stern: false
+
+# Allow inline HTML (for <COMMAND> and other semantic tags)
+MD033: false
+
+# Allow bare URLs in code blocks
+MD034: false
+
+# Allow duplicate headings in different sections
+MD024:
+  siblings_only: true
+
+# Table column style - be more lenient
+MD060: false
+
+# Allow emphasis as heading in specific contexts (like signatures)
+MD036: false
