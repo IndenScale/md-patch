@@ -18,8 +18,29 @@ numbers. Designed with AI agents in mind, it supports:
 
 ## Installation
 
+### Quick Install (Recommended)
+
 ```bash
-# From source
+# Using the install script (Linux/macOS)
+curl -fsSL https://raw.githubusercontent.com/IndenScale/md-patch/main/install.sh | sh
+
+# Or with custom install directory
+curl -fsSL https://raw.githubusercontent.com/IndenScale/md-patch/main/install.sh | INSTALL_DIR=/usr/local/bin sh
+```
+
+### From crates.io
+
+```bash
+cargo install md-patch
+```
+
+### From GitHub Releases
+
+Download pre-built binaries from [GitHub Releases](https://github.com/IndenScale/md-patch/releases).
+
+### From Source
+
+```bash
 git clone https://github.com/IndenScale/md-patch.git
 cd md-patch
 cargo build --release
