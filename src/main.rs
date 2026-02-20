@@ -8,7 +8,7 @@ mod parser;
 mod patch;
 
 use config::{load_config, OperationConfig};
-use output::OutputFormat;
+use output::{OutputFormat, OperationInfo};
 use patch::{PatchOperation, PatchResult};
 
 /// CLI tool for declarative, idempotent Markdown block patching
@@ -46,11 +46,11 @@ enum Commands {
         content: Option<String>,
 
         /// Fingerprint regex for safety check
-        #[arg(short, long)]
+        #[arg(short = 'p', long)]
         fingerprint: Option<String>,
 
         /// Force execution of destructive operations
-        #[arg(short, long)]
+        #[arg(long)]
         force: bool,
 
         /// Output format
@@ -64,7 +64,7 @@ enum Commands {
         config: PathBuf,
 
         /// Force execution of destructive operations
-        #[arg(short, long)]
+        #[arg(long)]
         force: bool,
 
         /// Output format
@@ -145,15 +145,22 @@ fn run() -> Result<()> {
             let content_str = std::fs::read_to_string(&file)?;
             let result = patch::apply_operation(&content_str, &operation, force)?;
 
+            let op_info = OperationInfo {
+                file: file.clone(),
+                heading: heading.clone(),
+                index,
+                operation: format!("{:?}", op).to_lowercase(),
+            };
+
             match result {
                 PatchResult::Applied { new_content, diff } => {
                     if force {
                         std::fs::write(&file, new_content)?;
                     }
-                    output::print_result(&diff, format, force);
+                    output::print_result_with_info(&diff, format, force, Some(op_info));
                 }
                 PatchResult::DryRun { diff } => {
-                    output::print_result(&diff, format, false);
+                    output::print_result_with_info(&diff, format, false, Some(op_info));
                     if !force {
                         println!("\n(Run with --force to apply changes)");
                     }

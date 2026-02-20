@@ -79,8 +79,10 @@ pub fn apply_operation(
         Operation::Delete => apply_delete(content, block)?,
     };
 
-    // Generate diff
-    let diff = generate_diff(content, &new_content, &operation.file.to_string_lossy());
+    // Generate diff - clean filename for display (remove leading ./ or /)
+    let filename = operation.file.to_string_lossy();
+    let clean_filename = filename.trim_start_matches("./").trim_start_matches('/');
+    let diff = generate_diff(content, &new_content, clean_filename);
 
     if force {
         Ok(PatchResult::Applied { new_content, diff })
@@ -91,14 +93,23 @@ pub fn apply_operation(
 
 fn apply_append(content: &str, block: &Block, new_content: Option<&str>) -> Result<String> {
     let insert_content = match new_content {
-        Some(c) => format!("\n{}", c),
+        Some(c) => c,
         None => bail!("Append operation requires content"),
     };
+
+    // 幂等性检查：如果内容已存在，直接返回原内容
+    let block_and_after = &content[block.start..];
+    if block_and_after.contains(insert_content) {
+        return Ok(content.to_string());
+    }
 
     let before = &content[..block.end];
     let after = &content[block.end..];
 
-    Ok(format!("{}{}{}", before, insert_content, after))
+    // 确保追加内容前有换行，且与后续内容有适当分隔
+    let insert_with_newline = format!("\n{}\n", insert_content);
+
+    Ok(format!("{}{}{}", before, insert_with_newline, after))
 }
 
 fn apply_replace(content: &str, block: &Block, new_content: Option<&str>) -> Result<String> {
