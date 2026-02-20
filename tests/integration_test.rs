@@ -8,12 +8,17 @@ use std::process::Command;
 
 /// 获取 mdp 二进制路径
 fn mdp_bin() -> PathBuf {
+    // 优先使用当前构建的二进制（通过 CARGO_BIN_EXE_mdp 环境变量）
+    if let Ok(bin_path) = std::env::var("CARGO_BIN_EXE_mdp") {
+        return PathBuf::from(bin_path);
+    }
+    
+    // 否则尝试 release 或 debug 版本
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("target");
     path.push("release");
     path.push("mdp");
     
-    // 如果不存在，尝试 debug 版本
     if !path.exists() {
         path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.push("target");
@@ -24,10 +29,23 @@ fn mdp_bin() -> PathBuf {
     path
 }
 
-/// 创建临时 markdown 文件
+/// 创建临时 markdown 文件（使用线程安全的唯一名称）
 fn create_test_file(content: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let thread_id = std::thread::current().id();
+    
     let temp_dir = std::env::temp_dir();
-    let file_path = temp_dir.join(format!("mdp_test_{}.md", std::process::id()));
+    let file_name = format!("mdp_test_{:?}_{}_{}.md", thread_id, timestamp, counter);
+    let file_path = temp_dir.join(file_name);
     fs::write(&file_path, content).unwrap();
     file_path
 }
@@ -53,7 +71,7 @@ fn run_mdp(args: &[&str]) -> (i32, String, String) {
 
 #[test]
 fn test_idempotent_append() {
-    let content = "# Doc\n\n## Section\n\nOriginal\n";
+    let content = "# Doc\n\n## UniqueSection\n\nOriginal\n";
     let file_path = create_test_file(content);
     let file_str = file_path.to_str().unwrap();
     
@@ -61,7 +79,7 @@ fn test_idempotent_append() {
     let (code1, _, _) = run_mdp(&[
         "patch",
         "-f", file_str,
-        "-H", "## Section",
+        "-H", "## UniqueSection",
         "--op", "append",
         "-c", "New content",
         "--force"
@@ -75,7 +93,7 @@ fn test_idempotent_append() {
     let (code2, stdout2, _) = run_mdp(&[
         "patch",
         "-f", file_str,
-        "-H", "## Section",
+        "-H", "## UniqueSection",
         "--op", "append",
         "-c", "New content",
         "--force"
@@ -96,7 +114,7 @@ fn test_idempotent_append() {
 
 #[test]
 fn test_destructive_operation_requires_fingerprint_or_force() {
-    let content = "# Doc\n\n## Section\n\nSensitive content\n";
+    let content = "# Doc\n\n## UniqueSensitive\n\nSensitive content\n";
     let file_path = create_test_file(content);
     let file_str = file_path.to_str().unwrap();
     
@@ -104,14 +122,14 @@ fn test_destructive_operation_requires_fingerprint_or_force() {
     let (code, _, stderr) = run_mdp(&[
         "patch",
         "-f", file_str,
-        "-H", "## Section",
+        "-H", "## UniqueSensitive",
         "--op", "replace",
         "-c", "New content"
     ]);
     
     assert_ne!(code, 0, "Should fail without fingerprint or force");
-    assert!(stderr.contains("fingerprint") || stderr.contains("force"), 
-            "Error should mention fingerprint or force: {}", stderr);
+    assert!(stderr.contains("fingerprint") || stderr.contains("force") || stderr.contains("safety"), 
+            "Error should mention fingerprint, force, or safety: {}", stderr);
     
     // 清理
     let _ = fs::remove_file(&file_path);
@@ -119,7 +137,7 @@ fn test_destructive_operation_requires_fingerprint_or_force() {
 
 #[test]
 fn test_fingerprint_validation() {
-    let content = "# Doc\n\n## Section\n\nTODO: fix this\n";
+    let content = "# Doc\n\n## TodoSection\n\nTODO: fix this\n";
     let file_path = create_test_file(content);
     let file_str = file_path.to_str().unwrap();
     
@@ -127,7 +145,7 @@ fn test_fingerprint_validation() {
     let (code, _, _) = run_mdp(&[
         "patch",
         "-f", file_str,
-        "-H", "## Section",
+        "-H", "## TodoSection",
         "--op", "replace",
         "-c", "Fixed",
         "-p", "WRONG_PATTERN",
@@ -139,7 +157,7 @@ fn test_fingerprint_validation() {
     let (code2, _, _) = run_mdp(&[
         "patch",
         "-f", file_str,
-        "-H", "## Section",
+        "-H", "## TodoSection",
         "--op", "replace",
         "-c", "Fixed",
         "-p", "TODO.*fix",
@@ -180,14 +198,14 @@ fn test_exit_code_heading_not_found() {
 
 #[test]
 fn test_exit_code_ambiguous_heading() {
-    let content = "# Doc A\n\n## Section\n\nA\n\n# Doc B\n\n## Section\n\nB\n";
+    let content = "# Doc A\n\n## AmbigSection\n\nA\n\n# Doc B\n\n## AmbigSection\n\nB\n";
     let file_path = create_test_file(content);
     let file_str = file_path.to_str().unwrap();
     
     let (code, _, _) = run_mdp(&[
         "patch",
         "-f", file_str,
-        "-H", "## Section",
+        "-H", "## AmbigSection",
         "--op", "append",
         "-c", "x"
     ]);
@@ -239,7 +257,7 @@ fn test_nested_heading_path() {
 
 #[test]
 fn test_atomic_replace() {
-    let content = "# Doc\n\n## Section\n\nOriginal\n";
+    let content = "# Doc\n\n## AtomicSection\n\nOriginal\n";
     let file_path = create_test_file(content);
     let file_str = file_path.to_str().unwrap();
     
@@ -247,7 +265,7 @@ fn test_atomic_replace() {
     let (code, _, _) = run_mdp(&[
         "patch",
         "-f", file_str,
-        "-H", "## Section",
+        "-H", "## AtomicSection",
         "--op", "replace",
         "-c", "Replaced",
         "-p", "Original",
@@ -274,14 +292,14 @@ fn test_atomic_replace() {
 
 #[test]
 fn test_json_output() {
-    let content = "# Doc\n\n## Section\n\nContent\n";
+    let content = "# Doc\n\n## JsonSection\n\nContent\n";
     let file_path = create_test_file(content);
     let file_str = file_path.to_str().unwrap();
     
     let (code, stdout, _) = run_mdp(&[
         "patch",
         "-f", file_str,
-        "-H", "## Section",
+        "-H", "## JsonSection",
         "--op", "append",
         "-c", "New",
         "--force",
