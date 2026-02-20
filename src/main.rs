@@ -54,7 +54,7 @@ enum Commands {
         force: bool,
 
         /// Output format
-        #[arg(short, long, value_enum, default_value = "diff")]
+        #[arg(short = 'F', long, value_enum, default_value = "diff")]
         format: OutputFormat,
     },
 
@@ -68,7 +68,7 @@ enum Commands {
         force: bool,
 
         /// Output format
-        #[arg(short, long, value_enum, default_value = "diff")]
+        #[arg(short = 'F', long, value_enum, default_value = "diff")]
         format: OutputFormat,
     },
 
@@ -78,7 +78,7 @@ enum Commands {
         config: PathBuf,
 
         /// Output format
-        #[arg(short, long, value_enum, default_value = "diff")]
+        #[arg(short = 'F', long, value_enum, default_value = "diff")]
         format: OutputFormat,
     },
 }
