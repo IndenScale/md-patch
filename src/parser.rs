@@ -92,33 +92,72 @@ pub fn parse_sections(content: &str) -> Result<Vec<Section>> {
 }
 
 /// Find a section by heading path, supporting nested headings
-/// For nested paths, we simply match the last heading in the path
-/// The full path serves as disambiguation when multiple sections have the same subheading
+/// heading_path: ["# Parent", "## Child", "### GrandChild"]
+/// 从第一个 heading 开始，逐级向下查找
 pub fn find_section<'a>(sections: &'a [Section], heading_path: &[String]) -> Result<&'a Section> {
     if heading_path.is_empty() {
         bail!("Heading path cannot be empty");
     }
 
-    // For single heading, match directly
-    let target_heading = heading_path.last().unwrap().trim();
+    // 第一级：找到所有匹配的顶级 heading
+    let first_heading = heading_path[0].trim();
+    let first_level = first_heading.chars().take_while(|&c| c == '#').count() as u8;
     
     let candidates: Vec<&Section> = sections
         .iter()
-        .filter(|s| s.heading.trim() == target_heading)
+        .filter(|s| s.heading.trim() == first_heading)
         .collect();
 
     if candidates.is_empty() {
-        bail!("Heading not found: {}", target_heading);
+        bail!("Heading not found: {}", first_heading);
     }
 
-    if candidates.len() > 1 {
-        bail!(
-            "Multiple sections found for heading '{}'. Please provide a more specific path like '# Parent ## {}'.",
-            target_heading, target_heading
-        );
+    // 如果只找一级，但有多个匹配，报错提示歧义
+    if heading_path.len() == 1 {
+        if candidates.len() > 1 {
+            bail!(
+                "Multiple sections found for heading '{}'. Please provide a more specific path like '# Parent ## {}'.",
+                first_heading, 
+                first_heading.trim_start_matches('#').trim()
+            );
+        }
+        return Ok(candidates[0]);
     }
 
-    Ok(candidates[0])
+    // 多级路径：需要按顺序找到匹配的嵌套结构
+    // 由于 sections 是按文档顺序排列的，我们可以利用这一点
+    let mut current_section = candidates[0];
+    let mut section_idx = sections.iter().position(|s| s.heading == current_section.heading).unwrap();
+
+    for i in 1..heading_path.len() {
+        let target_heading = heading_path[i].trim();
+        let target_level = target_heading.chars().take_while(|&c| c == '#').count() as u8;
+
+        // 从当前 section 之后开始查找
+        let mut found = false;
+        for (idx, section) in sections.iter().enumerate().skip(section_idx + 1) {
+            let section_level = section.heading.chars().take_while(|&c| c == '#').count() as u8;
+            
+            // 如果遇到同级的 heading，说明已经离开了当前 section 的范围
+            if section_level <= first_level {
+                break;
+            }
+            
+            // 匹配目标 heading
+            if section.heading.trim() == target_heading {
+                current_section = section;
+                section_idx = idx;
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            bail!("Subheading not found: {}", target_heading);
+        }
+    }
+
+    Ok(current_section)
 }
 
 /// Get a block by index within a section

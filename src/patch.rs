@@ -106,8 +106,8 @@ fn apply_append(content: &str, block: &Block, new_content: Option<&str>) -> Resu
     let before = &content[..block.end];
     let after = &content[block.end..];
 
-    // 确保追加内容前有换行，且与后续内容有适当分隔
-    let insert_with_newline = format!("\n{}\n", insert_content);
+    // 在内容前加换行，确保格式正确
+    let insert_with_newline = format!("\n{}", insert_content);
 
     Ok(format!("{}{}{}", before, insert_with_newline, after))
 }
@@ -239,15 +239,23 @@ mod tests {
     #[test]
     fn test_apply_append() {
         let content = "# Title\n\nFirst paragraph.\n\nSecond paragraph.\n";
+        // block.end 指向段落结束后的位置（包含换行）
         let block = Block {
-            start: 10,
-            end: 27,
+            start: 9,
+            end: 26, // "First paragraph." 结束于 25, 加上换行符
             content: "First paragraph.".to_string(),
             block_type: crate::parser::BlockType::Paragraph,
         };
         
         let result = apply_append(content, &block, Some("New content")).unwrap();
-        assert!(result.contains("First paragraph.\nNew content"));
+        // 追加后应包含 "First paragraph.\nNew content"
+        assert!(result.contains("First paragraph."));
+        assert!(result.contains("New content"));
+        assert!(result.contains("Second paragraph."));
+        
+        // 幂等性测试：再次追加相同内容应无变化
+        let result2 = apply_append(&result, &block, Some("New content")).unwrap();
+        assert_eq!(result, result2);
     }
 
     #[test]

@@ -16,6 +16,18 @@ use patch::{PatchOperation, PatchResult};
 #[command(name = "mdp")]
 #[command(about = "Declarative, idempotent Markdown block patching tool")]
 #[command(version)]
+#[command(after_help = "EXAMPLES:
+    # 在章节后添加内容
+    mdp patch -f doc.md -H '## 功能特性' --op append -c '新增功能说明'
+
+    # 安全替换内容（带 fingerprint 验证）
+    mdp patch -f doc.md -H '## API' --op replace \\
+        -c '新文档' -p '旧内容.*模式' --force
+
+    # 批量操作
+    mdp plan patches.yaml     # 预览更改
+    mdp apply patches.yaml --force   # 应用更改
+")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -106,8 +118,32 @@ impl From<OperationType> for patch::Operation {
 fn main() {
     if let Err(e) = run() {
         eprintln!("Error: {}", e);
-        std::process::exit(1);
+        let exit_code = classify_error(&e.to_string());
+        std::process::exit(exit_code);
     }
+}
+
+/// 根据错误信息分类返回退出码
+fn classify_error(error_msg: &str) -> i32 {
+    if error_msg.contains("Fingerprint mismatch") {
+        3
+    } else if error_msg.contains("Multiple sections found") || error_msg.contains("Ambiguous") {
+        4
+    } else if error_msg.contains("Heading not found") || error_msg.contains("Subheading not found") {
+        2
+    } else if error_msg.contains("file") || error_msg.contains("path") || error_msg.contains("not found") {
+        1
+    } else {
+        1
+    }
+}
+
+/// 原子写入文件：先写临时文件，再重命名
+fn atomic_write(file: &PathBuf, content: &str) -> Result<()> {
+    let temp_file = file.with_extension("md.tmp");
+    std::fs::write(&temp_file, content)?;
+    std::fs::rename(&temp_file, file)?;
+    Ok(())
 }
 
 fn run() -> Result<()> {
@@ -155,7 +191,7 @@ fn run() -> Result<()> {
             match result {
                 PatchResult::Applied { new_content, diff } => {
                     if force {
-                        std::fs::write(&file, new_content)?;
+                        atomic_write(&file, &new_content)?;
                     }
                     output::print_result_with_info(&diff, format, force, Some(op_info));
                 }
@@ -261,10 +297,7 @@ fn apply_batch(operations: Vec<OperationConfig>, force: bool, format: OutputForm
     if force {
         for (file, result) in &all_results {
             if let PatchResult::Applied { new_content, .. } = result {
-                // Write to temp file first (atomic write)
-                let temp_file = file.with_extension("md.tmp");
-                std::fs::write(&temp_file, new_content)?;
-                std::fs::rename(&temp_file, file)?;
+                atomic_write(file, new_content)?;
             }
         }
     }
