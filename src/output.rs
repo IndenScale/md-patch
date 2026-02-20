@@ -1,6 +1,7 @@
 use clap::ValueEnum;
 use colored::Colorize;
 use serde::Serialize;
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 pub enum OutputFormat {
@@ -11,6 +12,15 @@ pub enum OutputFormat {
     Json,
     /// Short summary
     Short,
+}
+
+/// 操作信息，用于 JSON 输出
+#[derive(Debug, Clone)]
+pub struct OperationInfo {
+    pub file: PathBuf,
+    pub heading: String,
+    pub index: usize,
+    pub operation: String,
 }
 
 #[derive(Serialize)]
@@ -30,9 +40,18 @@ struct Change {
 }
 
 pub fn print_result(diff: &str, format: OutputFormat, applied: bool) {
+    print_result_with_info(diff, format, applied, None);
+}
+
+pub fn print_result_with_info(
+    diff: &str,
+    format: OutputFormat,
+    applied: bool,
+    op_info: Option<OperationInfo>,
+) {
     match format {
         OutputFormat::Diff => print_diff(diff),
-        OutputFormat::Json => print_json(diff, applied),
+        OutputFormat::Json => print_json(diff, applied, op_info),
         OutputFormat::Short => print_short(diff, applied),
     }
 }
@@ -51,91 +70,99 @@ fn print_diff(diff: &str) {
     }
 }
 
-fn print_json(_diff: &str, applied: bool) {
-    // Simple JSON output - in production, this would be more structured
+fn print_json(_diff: &str, applied: bool, op_info: Option<OperationInfo>) {
+    let (file, operation, heading, index) = match op_info {
+        Some(info) => (
+            info.file.to_string_lossy().to_string(),
+            info.operation,
+            info.heading,
+            info.index,
+        ),
+        None => ("unknown".to_string(), "unknown".to_string(), "unknown".to_string(), 0),
+    };
+
     let output = JsonOutput {
         success: true,
         applied,
         changes: vec![Change {
-            file: "unknown".to_string(),
-            operation: "patch".to_string(),
-            heading: "unknown".to_string(),
-            index: 0,
+            file,
+            operation,
+            heading,
+            index,
             status: if applied { "applied".to_string() } else { "dry-run".to_string() },
         }],
     };
-    
+
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
 fn print_short(diff: &str, applied: bool) {
     let additions = diff.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
     let deletions = diff.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count();
-    
+
     let status = if applied {
         "Applied".green()
     } else {
         "Planned".yellow()
     };
-    
+
     println!("{}: +{} -{}", status, additions, deletions);
 }
 
 pub fn format_diff(old: &str, new: &str, filename: &str) -> String {
-    let mut diff = format!("--- a/{}\n+++ b/{}\n", filename, filename);
-    
+    let mut diff = format!("--- a/{0}\n+++ b/{0}\n", filename);
+
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
-    
+
     // Find approximate change location
     let mut start = 0;
-    while start < old_lines.len() 
-        && start < new_lines.len() 
-        && old_lines[start] == new_lines[start] 
+    while start < old_lines.len()
+        && start < new_lines.len()
+        && old_lines[start] == new_lines[start]
     {
         start += 1;
     }
-    
+
     let mut old_end = old_lines.len();
     let mut new_end = new_lines.len();
-    while old_end > start 
-        && new_end > start 
-        && old_lines[old_end - 1] == new_lines[new_end - 1] 
+    while old_end > start
+        && new_end > start
+        && old_lines[old_end - 1] == new_lines[new_end - 1]
     {
         old_end -= 1;
         new_end -= 1;
     }
-    
+
     // Output context and changes
     let context_start = start.saturating_sub(3);
-    
+
     diff.push_str(&format!(
-        "@@ -{},{} +{},{} @@\n",
+        "@@ -{},{1} +{},{2} @@\n",
         context_start + 1,
         old_end.saturating_sub(context_start),
-        context_start + 1,
         new_end.saturating_sub(context_start)
     ));
-    
+
     // Context before
     for i in context_start..start {
         diff.push_str(&format!(" {}\n", old_lines[i]));
     }
-    
+
     // Deletions
     for i in start..old_end {
-        diff.push_str(&format!("-{}/n", old_lines[i]));
+        diff.push_str(&format!("-{}\n", old_lines[i]));
     }
-    
+
     // Additions
     for i in start..new_end {
         diff.push_str(&format!("+{}\n", new_lines[i]));
     }
-    
+
     // Context after
     for i in old_end..(old_end + 3).min(old_lines.len()) {
         diff.push_str(&format!(" {}\n", old_lines[i]));
     }
-    
+
     diff
 }
