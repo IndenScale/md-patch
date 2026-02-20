@@ -33,7 +33,16 @@ detect_platform() {
 
 # Get latest release version
 get_latest_version() {
-    curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/'
+    local _response
+    _response=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest")
+    
+    # Check if API returned an error (no releases yet)
+    if echo "$_response" | grep -q '"message": "Not Found"'; then
+        echo ""
+        return 1
+    fi
+    
+    echo "$_response" | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/'
 }
 
 # Download and install
@@ -47,7 +56,22 @@ main() {
     # Get latest version
     VERSION=$(get_latest_version)
     if [ -z "$VERSION" ]; then
-        echo "Error: Could not determine latest version"
+        echo ""
+        echo "❌ Error: No releases found for ${REPO}"
+        echo ""
+        echo "The project may not have published any releases yet."
+        echo ""
+        echo "Alternative installation methods:"
+        echo ""
+        echo "1. Install from crates.io (requires Rust):"
+        echo "   cargo install md-patch"
+        echo ""
+        echo "2. Build from source:"
+        echo "   git clone https://github.com/${REPO}.git"
+        echo "   cd md-patch"
+        echo "   cargo build --release"
+        echo "   cp target/release/mdp ~/.local/bin/"
+        echo ""
         exit 1
     fi
     echo "Latest version: ${VERSION}"
