@@ -1,0 +1,230 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 单元测试 + 代码检查
+  test:
+    name: Test & Lint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
+    
+    - name: Cache cargo dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Check formatting
+      run: cargo fmt -- --check
+    
+    - name: Run clippy
+      run: cargo clippy -- -D warnings
+    
+    - name: Run unit tests
+      run: cargo test --lib --verbose
+    
+    - name: Build
+      run: cargo build --verbose
+    
+    - name: Run integration tests
+      run: cargo test --test integration_test --verbose
+
+  # 集成测试（关键特性回归测试）
+  integration:
+    name: Key Features Regression Test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Build release
+      run: cargo build --release
+    
+    - name: Test --help
+      run: |
+        ./target/release/mdp --help
+        ./target/release/mdp patch --help
+    
+    - name: Test idempotent append (关键特性)
+      run: |
+        cat > /tmp/test.md << 'EOF'
+        # Test Doc
+
+        ## Section
+
+        Original content
+        EOF
+        
+        echo "=== First append ==="
+        ./target/release/mdp patch -f /tmp/test.md -H "## Section" --op append -c "New line" --force
+        
+        echo "=== File after first append ==="
+        cat /tmp/test.md
+        
+        echo "=== Second append (should be idempotent) ==="
+        ./target/release/mdp patch -f /tmp/test.md -H "## Section" --op append -c "New line" --force 2>&1 | tee /tmp/second_output.txt
+        
+        # Check no changes in second run
+        if grep -q "^+" /tmp/second_output.txt; then
+          echo "❌ FAIL: Second append made changes (not idempotent)"
+          exit 1
+        else
+          echo "✅ PASS: Second append made no changes (idempotent)"
+        fi
+    
+    - name: Test exit codes (关键特性)
+      run: |
+        echo "=== Test exit code 2: Heading not found ==="
+        ./target/release/mdp patch -f /tmp/test.md -H "# NonExistent" --op append -c "x" 2>/dev/null || code=$?
+        if [ "${code:-0}" -eq 2 ]; then
+          echo "✅ PASS: Exit code 2 for heading not found"
+        else
+          echo "❌ FAIL: Expected exit code 2, got ${code:-0}"
+          exit 1
+        fi
+        
+        echo "=== Test exit code 3: Fingerprint mismatch ==="
+        ./target/release/mdp patch -f /tmp/test.md -H "# Test Doc" --op replace -c "x" -p "nomatch" --force 2>/dev/null || code=$?
+        if [ "${code:-0}" -eq 3 ]; then
+          echo "✅ PASS: Exit code 3 for fingerprint mismatch"
+        else
+          echo "❌ FAIL: Expected exit code 3, got ${code:-0}"
+          exit 1
+        fi
+        
+        echo "=== Test exit code 4: Ambiguous heading ==="
+        cat > /tmp/ambig.md << 'EOF'
+        # Doc A
+
+        ## Section
+
+        A
+
+        # Doc B
+
+        ## Section
+
+        B
+        EOF
+        ./target/release/mdp patch -f /tmp/ambig.md -H "## Section" --op append -c "x" 2>/dev/null || code=$?
+        if [ "${code:-0}" -eq 4 ]; then
+          echo "✅ PASS: Exit code 4 for ambiguous heading"
+        else
+          echo "❌ FAIL: Expected exit code 4, got ${code:-0}"
+          exit 1
+        fi
+    
+    - name: Test nested heading path (关键特性)
+      run: |
+        cat > /tmp/nested.md << 'EOF'
+        # Doc A
+
+        ## SubSection
+
+        Content A
+
+        # Doc B
+
+        ## SubSection
+
+        Content B
+        EOF
+        
+        echo "=== Test nested path disambiguation ==="
+        ./target/release/mdp patch -f /tmp/nested.md -H "# Doc A ## SubSection" --op append -c "Added to A" --force
+        
+        if grep -q "Added to A" /tmp/nested.md; then
+          echo "✅ PASS: Nested heading path works"
+        else
+          echo "❌ FAIL: Nested heading path failed"
+          cat /tmp/nested.md
+          exit 1
+        fi
+        
+        # Verify it was added to the right place (between A and B)
+        if grep -A1 "Content A" /tmp/nested.md | grep -q "Added to A"; then
+          echo "✅ PASS: Content added to correct section"
+        else
+          echo "❌ FAIL: Content not in correct position"
+          cat /tmp/nested.md
+          exit 1
+        fi
+    
+    - name: Test destructive operation safety (关键特性)
+      run: |
+        cat > /tmp/safe.md << 'EOF'
+        # Doc
+
+        ## Sensitive
+
+        Important data here
+        EOF
+        
+        echo "=== Test replace without safety (should fail) ==="
+        ./target/release/mdp patch -f /tmp/safe.md -H "## Sensitive" --op replace -c "hacked" 2>&1 | tee /tmp/safe_fail.txt
+        
+        if grep -q "fingerprint\|force" /tmp/safe_fail.txt; then
+          echo "✅ PASS: Safety check prevents destructive operation"
+        else
+          echo "❌ FAIL: Safety check not working"
+          exit 1
+        fi
+        
+        echo "=== Test replace with fingerprint ==="
+        ./target/release/mdp patch -f /tmp/safe.md -H "## Sensitive" --op replace -c "Updated" -p "Important.*data" --force
+        
+        if grep -q "Updated" /tmp/safe.md; then
+          echo "✅ PASS: Fingerprint validation works"
+        else
+          echo "❌ FAIL: Fingerprint validation failed"
+          cat /tmp/safe.md
+          exit 1
+        fi
+
+  # 发布构建测试
+  build:
+    name: Release Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Build release
+      run: cargo build --release
+    
+    - name: Test binary
+      shell: bash
+      run: |
+        ./target/release/mdp --version
+        ./target/release/mdp --help
