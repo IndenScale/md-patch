@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
@@ -17,16 +17,30 @@ use patch::{PatchOperation, PatchResult};
 #[command(about = "Declarative, idempotent Markdown block patching tool")]
 #[command(version)]
 #[command(after_help = "EXAMPLES:
-    # 在章节后添加内容
-    mdp patch -f doc.md -H '## 功能特性' --op append -c '新增功能说明'
+    # 在章节后添加内容 (block_index = 0 表示 heading 后的第一个内容块)
+    mdp patch -f doc.md -H '## 功能特性' -i 0 --op append -c '新增功能说明'
+
+    # 使用嵌套 heading 路径解决歧义 (用空格分隔多个 heading)
+    mdp patch -f doc.md -H '# 父标题 ## 子标题' -i 0 --op append -c '内容'
 
     # 安全替换内容（带 fingerprint 验证）
-    mdp patch -f doc.md -H '## API' --op replace \\
+    mdp patch -f doc.md -H '## API' -i 0 --op replace \\
         -c '新文档' -p '旧内容.*模式' --force
+
+    # 删除内容块
+    mdp patch -f doc.md -H '## 已弃用' -i 0 --op delete -p '待删除.*内容' --force
 
     # 批量操作
     mdp plan patches.yaml     # 预览更改
     mdp apply patches.yaml --force   # 应用更改
+
+ADDRESSING MODEL:
+    file → heading_path → block_index
+    
+    - Heading path: 空格分隔的 heading 路径，用于精确定位
+      例如: '# Title ## Subtitle' 表示 Title 下的 Subtitle
+    - Block index: heading 后第 N 个内容块，0-based
+      0 = heading 后的第一个内容块（段落、代码块等）
 ")]
 struct Cli {
     #[command(subcommand)]
@@ -65,6 +79,10 @@ enum Commands {
         #[arg(long)]
         force: bool,
 
+        /// Skip creating backup files (.bak)
+        #[arg(long)]
+        no_backup: bool,
+
         /// Output format
         #[arg(short = 'F', long, value_enum, default_value = "diff")]
         format: OutputFormat,
@@ -78,6 +96,10 @@ enum Commands {
         /// Force execution of destructive operations
         #[arg(long)]
         force: bool,
+
+        /// Skip creating backup files (.bak)
+        #[arg(long)]
+        no_backup: bool,
 
         /// Output format
         #[arg(short = 'F', long, value_enum, default_value = "diff")]
@@ -138,8 +160,15 @@ fn classify_error(error_msg: &str) -> i32 {
     }
 }
 
-/// 原子写入文件：先写临时文件，再重命名
-fn atomic_write(file: &PathBuf, content: &str) -> Result<()> {
+/// 原子写入文件：先备份（可选），再写临时文件，最后重命名
+fn atomic_write(file: &PathBuf, content: &str, no_backup: bool) -> Result<()> {
+    // 如果文件存在且不是禁止备份，先创建备份
+    if !no_backup && file.exists() {
+        let backup_path = file.with_extension("bak");
+        std::fs::copy(file, &backup_path)
+            .with_context(|| format!("Failed to create backup: {}", backup_path.display()))?;
+    }
+
     let temp_file = file.with_extension("md.tmp");
     std::fs::write(&temp_file, content)?;
     std::fs::rename(&temp_file, file)?;
@@ -158,6 +187,7 @@ fn run() -> Result<()> {
             content,
             fingerprint,
             force,
+            no_backup,
             format,
         } => {
             // Validate content requirement
@@ -189,14 +219,12 @@ fn run() -> Result<()> {
             };
 
             match result {
-                PatchResult::Applied { new_content, diff } => {
-                    if force {
-                        atomic_write(&file, &new_content)?;
-                    }
-                    output::print_result_with_info(&diff, format, force, Some(op_info));
+                PatchResult::Applied { new_content, diff, is_noop } => {
+                    atomic_write(&file, &new_content, no_backup)?;
+                    output::print_result_with_info(&diff, format, true, Some(op_info), is_noop);
                 }
-                PatchResult::DryRun { diff } => {
-                    output::print_result_with_info(&diff, format, false, Some(op_info));
+                PatchResult::DryRun { diff, is_noop } => {
+                    output::print_result_with_info(&diff, format, false, Some(op_info), is_noop);
                     if !force {
                         println!("\n(Run with --force to apply changes)");
                     }
@@ -207,15 +235,16 @@ fn run() -> Result<()> {
         Commands::Apply {
             config,
             force,
+            no_backup,
             format,
         } => {
             let operations = load_config(&config)?;
-            apply_batch(operations, force, format)?;
+            apply_batch(operations, force, format, no_backup)?;
         }
 
         Commands::Plan { config, format } => {
             let operations = load_config(&config)?;
-            apply_batch(operations, false, format)?;
+            apply_batch(operations, false, format, true)?;
         }
     }
 
@@ -256,7 +285,7 @@ fn parse_heading_path(path: &str) -> Result<Vec<String>> {
     Ok(headings)
 }
 
-fn apply_batch(operations: Vec<OperationConfig>, force: bool, format: OutputFormat) -> Result<()> {
+fn apply_batch(operations: Vec<OperationConfig>, force: bool, format: OutputFormat, no_backup: bool) -> Result<()> {
     let mut all_diffs = Vec::new();
     let mut all_results = Vec::new();
 
@@ -297,7 +326,7 @@ fn apply_batch(operations: Vec<OperationConfig>, force: bool, format: OutputForm
     if force {
         for (file, result) in &all_results {
             if let PatchResult::Applied { new_content, .. } = result {
-                atomic_write(file, new_content)?;
+                atomic_write(file, new_content, no_backup)?;
             }
         }
     }
@@ -305,14 +334,15 @@ fn apply_batch(operations: Vec<OperationConfig>, force: bool, format: OutputForm
     // Output results
     for (file, result) in &all_results {
         match result {
-            PatchResult::Applied { diff, .. } | PatchResult::DryRun { diff } => {
+            PatchResult::Applied { diff, .. } | PatchResult::DryRun { diff, .. } => {
                 all_diffs.push(format!("--- {} ---\n{}", file.display(), diff));
             }
         }
     }
 
     let combined_diff = all_diffs.join("\n");
-    output::print_result(&combined_diff, format, force);
+    // Batch 操作暂简单处理，不传递 is_noop
+    output::print_result(&combined_diff, format, force, false);
 
     if !force {
         println!("\n(Run with --force to apply changes)");

@@ -32,8 +32,8 @@ pub struct PatchOperation {
 }
 
 pub enum PatchResult {
-    Applied { new_content: String, diff: String },
-    DryRun { diff: String },
+    Applied { new_content: String, diff: String, is_noop: bool },
+    DryRun { diff: String, is_noop: bool },
 }
 
 pub fn apply_operation(
@@ -50,23 +50,28 @@ pub fn apply_operation(
     // Get the target block
     let block = get_block(section, operation.block_index)?;
 
-    // Validate fingerprint if provided (for Replace/Delete)
+    // === 定位层：fingerprint 是定位条件，不匹配 = 找不到目标 ===
+    // 注意：fingerprint 检查独立于 --force，force 不能绕过定位失败
     if let Some(ref fingerprint) = operation.fingerprint {
         let regex = Regex::new(fingerprint)?;
         if !regex.is_match(&block.content) {
             bail!(
-                "Fingerprint mismatch: expected pattern '{}' not found in block content",
-                fingerprint
+                "Fingerprint mismatch: block at index {} does not match pattern '{}'. \
+                 Target block content does not meet identification criteria.",
+                operation.block_index, fingerprint
             );
         }
     }
 
-    // Require fingerprint for destructive operations without --force
+    // === 权限层：破坏性操作需要明确的执行授权 ===
+    // 两种授权方式：
+    // 1. 提供 fingerprint（通过内容验证表明知道自己在改什么）
+    // 2. 提供 --force（明确接受风险）
     match operation.operation {
         Operation::Replace | Operation::Delete if operation.fingerprint.is_none() && !force => {
             bail!(
-                "Destructive operation requires --force flag or fingerprint for safety. \
-                 Provide a fingerprint pattern to verify the target block."
+                "Destructive operation requires authorization: provide either \
+                 --force flag or a fingerprint to verify the target block."
             );
         }
         _ => {}
@@ -84,10 +89,13 @@ pub fn apply_operation(
     let clean_filename = filename.trim_start_matches("./").trim_start_matches('/');
     let diff = generate_diff(content, &new_content, clean_filename);
 
+    // Noop 检测：内容无变化（幂等性生效）
+    let is_noop = content == new_content;
+
     if force {
-        Ok(PatchResult::Applied { new_content, diff })
+        Ok(PatchResult::Applied { new_content, diff, is_noop })
     } else {
-        Ok(PatchResult::DryRun { diff })
+        Ok(PatchResult::DryRun { diff, is_noop })
     }
 }
 

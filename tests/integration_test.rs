@@ -90,7 +90,7 @@ fn test_idempotent_append() {
     assert!(content_after_first.contains("New content"), "Content should be added");
     
     // 第二次 append相同内容（幂等性测试）
-    let (code2, stdout2, _) = run_mdp(&[
+    let (code2, _stdout2, _) = run_mdp(&[
         "patch",
         "-f", file_str,
         "-H", "## UniqueSection",
@@ -106,6 +106,113 @@ fn test_idempotent_append() {
     
     // 清理
     let _ = fs::remove_file(&file_path);
+}
+
+// ============================================================================
+// 测试：备份机制
+// ============================================================================
+
+#[test]
+fn test_backup_created_on_destructive_operation() {
+    let content = "# Doc\n\n## Section\n\nOriginal\n";
+    let file_path = create_test_file(content);
+    let file_str = file_path.to_str().unwrap();
+    let backup_path = file_path.with_extension("bak");
+    
+    // 执行 replace 操作
+    let (code, _, _) = run_mdp(&[
+        "patch",
+        "-f", file_str,
+        "-H", "## Section",
+        "-i", "0",
+        "--op", "replace",
+        "-c", "Replaced",
+        "-p", "Original",
+        "--force"
+    ]);
+    
+    assert_eq!(code, 0);
+    assert!(backup_path.exists(), "Backup file should be created");
+    
+    // 验证备份内容
+    let backup_content = fs::read_to_string(&backup_path).unwrap();
+    assert!(backup_content.contains("Original"), "Backup should contain original content");
+    
+    // 清理
+    let _ = fs::remove_file(&file_path);
+    let _ = fs::remove_file(&backup_path);
+}
+
+#[test]
+fn test_no_backup_with_flag() {
+    let content = "# Doc\n\n## Section\n\nOriginal\n";
+    let file_path = create_test_file(content);
+    let file_str = file_path.to_str().unwrap();
+    let backup_path = file_path.with_extension("bak");
+    
+    // 使用 --no-backup
+    let (code, _, _) = run_mdp(&[
+        "patch",
+        "-f", file_str,
+        "-H", "## Section",
+        "-i", "0",
+        "--op", "replace",
+        "-c", "Replaced",
+        "-p", "Original",
+        "--force",
+        "--no-backup"
+    ]);
+    
+    assert_eq!(code, 0);
+    assert!(!backup_path.exists(), "Backup file should NOT be created with --no-backup");
+    
+    // 清理
+    let _ = fs::remove_file(&file_path);
+}
+
+// ============================================================================
+// 测试：Noop 检测（幂等性）
+// ============================================================================
+
+#[test]
+fn test_noop_detection_in_json_output() {
+    let content = "# Doc\n\n## Section\n\nContent\n";
+    let file_path = create_test_file(content);
+    let file_str = file_path.to_str().unwrap();
+    
+    // 第一次 append
+    let (code1, stdout1, _) = run_mdp(&[
+        "patch",
+        "-f", file_str,
+        "-H", "## Section",
+        "-i", "0",
+        "--op", "append",
+        "-c", "UniqueContent",
+        "--force",
+        "-F", "json"
+    ]);
+    assert_eq!(code1, 0);
+    assert!(stdout1.contains("\"is_noop\": false"), "First operation should not be noop");
+    assert!(stdout1.contains("\"status\": \"applied\""), "Status should be 'applied'");
+    
+    // 第二次 append相同内容（应该是 noop）
+    let (code2, stdout2, _) = run_mdp(&[
+        "patch",
+        "-f", file_str,
+        "-H", "## Section",
+        "-i", "0",
+        "--op", "append",
+        "-c", "UniqueContent",
+        "--force",
+        "-F", "json"
+    ]);
+    assert_eq!(code2, 0);
+    assert!(stdout2.contains("\"is_noop\": true"), "Second operation should be noop");
+    assert!(stdout2.contains("\"status\": \"noop\""), "Status should be 'noop'");
+    
+    // 清理
+    let _ = fs::remove_file(&file_path);
+    let _ = fs::remove_file(file_path.with_extension("bak"));
 }
 
 // ============================================================================

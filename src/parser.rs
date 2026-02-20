@@ -7,10 +7,12 @@ pub struct Block {
     pub start: usize,      // Start offset in bytes
     pub end: usize,        // End offset in bytes
     pub content: String,   // Full content including delimiters
+    #[allow(dead_code)]
     pub block_type: BlockType,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum BlockType {
     Paragraph,
     Heading { level: u8 },
@@ -26,8 +28,11 @@ pub enum BlockType {
 #[derive(Debug)]
 pub struct Section {
     pub heading: String,
+    #[allow(dead_code)]
     pub heading_level: u8,
+    #[allow(dead_code)]
     pub heading_start: usize,
+    #[allow(dead_code)]
     pub heading_end: usize,
     pub blocks: Vec<Block>,
 }
@@ -131,7 +136,7 @@ pub fn find_section<'a>(sections: &'a [Section], heading_path: &[String]) -> Res
 
     for i in 1..heading_path.len() {
         let target_heading = heading_path[i].trim();
-        let target_level = target_heading.chars().take_while(|&c| c == '#').count() as u8;
+        let _target_level = target_heading.chars().take_while(|&c| c == '#').count() as u8;
 
         // 从当前 section 之后开始查找
         let mut found = false;
